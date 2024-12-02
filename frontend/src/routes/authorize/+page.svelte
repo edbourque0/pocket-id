@@ -9,7 +9,7 @@
 	import { getWebauthnErrorMessage } from '$lib/utils/error-util';
 	import { startAuthentication } from '@simplewebauthn/browser';
 	import { AxiosError } from 'axios';
-	import { LucideMail, LucideUser } from 'lucide-svelte';
+	import { LucideMail, LucideUser, LucideUsers } from 'lucide-svelte';
 	import { slide } from 'svelte/transition';
 	import type { PageData } from './$types';
 	import ClientProviderImages from './components/client-provider-images.svelte';
@@ -24,7 +24,7 @@
 	let authorizationRequired = false;
 
 	export let data: PageData;
-	let { scope, nonce, client, state, callbackURL } = data;
+	let { scope, nonce, client, state, callbackURL, codeChallenge, codeChallengeMethod  } = data;
 
 	async function authorize() {
 		isLoading = true;
@@ -37,7 +37,7 @@
 			}
 
 			await oidService
-				.authorize(client!.id, scope, callbackURL, nonce)
+				.authorize(client!.id, scope, callbackURL, nonce, codeChallenge, codeChallengeMethod)
 				.then(async ({ code, callbackURL }) => {
 					onSuccess(code, callbackURL);
 				});
@@ -55,7 +55,7 @@
 		isLoading = true;
 		try {
 			await oidService
-				.authorizeNewClient(client!.id, scope, callbackURL, nonce)
+				.authorizeNewClient(client!.id, scope, callbackURL, nonce, codeChallenge, codeChallengeMethod)
 				.then(async ({ code, callbackURL }) => {
 					onSuccess(code, callbackURL);
 				});
@@ -111,6 +111,13 @@
 									icon={LucideUser}
 									name="Profile"
 									description="View your profile information"
+								/>
+							{/if}
+							{#if scope!.includes('groups')}
+								<ScopeItem
+									icon={LucideUsers}
+									name="Groups"
+									description="View the groups you are a member of"
 								/>
 							{/if}
 						</div>

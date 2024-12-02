@@ -1,6 +1,9 @@
 <script lang="ts">
+	import CheckboxWithLabel from '$lib/components/checkbox-with-label.svelte';
 	import FormInput from '$lib/components/form-input.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Label } from '$lib/components/ui/label';
 	import type { AllAppConfig } from '$lib/types/application-configuration';
 	import { createForm } from '$lib/utils/form-util';
 	import { toast } from 'svelte-sonner';
@@ -18,20 +21,16 @@
 
 	const updatedAppConfig = {
 		appName: appConfig.appName,
-		sessionDuration: appConfig.sessionDuration
+		sessionDuration: appConfig.sessionDuration,
+		emailsVerified: appConfig.emailsVerified,
+		allowOwnAccountEdit: appConfig.allowOwnAccountEdit
 	};
 
 	const formSchema = z.object({
 		appName: z.string().min(2).max(30),
-		sessionDuration: z.string().refine(
-			(val) => {
-				const num = Number(val);
-				return Number.isInteger(num) && num >= 1 && num <= 43200;
-			},
-			{
-				message: 'Session duration must be between 1 and 43200 minutes'
-			}
-		)
+		sessionDuration: z.number().min(1).max(43200),
+		emailsVerified: z.boolean(),
+		allowOwnAccountEdit: z.boolean()
 	});
 
 	const { inputs, ...form } = createForm<typeof formSchema>(formSchema, updatedAppConfig);
@@ -49,8 +48,21 @@
 		<FormInput label="Application Name" bind:input={$inputs.appName} />
 		<FormInput
 			label="Session Duration"
+			type="number"
 			description="The duration of a session in minutes before the user has to sign in again."
 			bind:input={$inputs.sessionDuration}
+		/>
+		<CheckboxWithLabel
+			id="self-account-editing"
+			label="Enable Self-Account Editing"
+			description="Whether the users should be able to edit their own account details."
+			bind:checked={$inputs.allowOwnAccountEdit.value}
+		/>
+		<CheckboxWithLabel
+			id="emails-verified"
+			label="Emails Verified"
+			description="Whether the user's email should be marked as verified for the OIDC clients."
+			bind:checked={$inputs.emailsVerified.value}
 		/>
 	</div>
 	<div class="mt-5 flex justify-end">

@@ -1,13 +1,10 @@
 package controller
 
 import (
-	"errors"
 	"github.com/gin-gonic/gin"
-	"github.com/stonith404/pocket-id/backend/internal/common"
 	"github.com/stonith404/pocket-id/backend/internal/dto"
 	"github.com/stonith404/pocket-id/backend/internal/middleware"
 	"github.com/stonith404/pocket-id/backend/internal/service"
-	"github.com/stonith404/pocket-id/backend/internal/utils"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,7 +15,7 @@ func NewOidcController(group *gin.RouterGroup, jwtAuthMiddleware *middleware.Jwt
 
 	group.POST("/oidc/authorize", jwtAuthMiddleware.Add(false), oc.authorizeHandler)
 	group.POST("/oidc/authorize/new-client", jwtAuthMiddleware.Add(false), oc.authorizeNewClientHandler)
-	group.POST("/oidc/token", oc.createIDTokenHandler)
+	group.POST("/oidc/token", oc.createTokensHandler)
 	group.GET("/oidc/userinfo", oc.userInfoHandler)
 
 	group.GET("/oidc/clients", jwtAuthMiddleware.Add(true), oc.listClientsHandler)
@@ -42,19 +39,13 @@ type OidcController struct {
 func (oc *OidcController) authorizeHandler(c *gin.Context) {
 	var input dto.AuthorizeOidcClientRequestDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	code, callbackURL, err := oc.oidcService.Authorize(input, c.GetString("userID"), c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
-		if errors.Is(err, common.ErrOidcMissingAuthorization) {
-			utils.CustomControllerError(c, http.StatusForbidden, err.Error())
-		} else if errors.Is(err, common.ErrOidcInvalidCallbackURL) {
-			utils.CustomControllerError(c, http.StatusBadRequest, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
@@ -69,17 +60,13 @@ func (oc *OidcController) authorizeHandler(c *gin.Context) {
 func (oc *OidcController) authorizeNewClientHandler(c *gin.Context) {
 	var input dto.AuthorizeOidcClientRequestDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	code, callbackURL, err := oc.oidcService.AuthorizeNewClient(input, c.GetString("userID"), c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
-		if errors.Is(err, common.ErrOidcInvalidCallbackURL) {
-			utils.CustomControllerError(c, http.StatusBadRequest, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
@@ -91,11 +78,14 @@ func (oc *OidcController) authorizeNewClientHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-func (oc *OidcController) createIDTokenHandler(c *gin.Context) {
-	var input dto.OidcIdTokenDto
+func (oc *OidcController) createTokensHandler(c *gin.Context) {
+	// Disable cors for this endpoint
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var input dto.OidcCreateTokensDto
 
 	if err := c.ShouldBind(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -103,25 +93,13 @@ func (oc *OidcController) createIDTokenHandler(c *gin.Context) {
 	clientSecret := input.ClientSecret
 
 	// Client id and secret can also be passed over the Authorization header
-	if clientID == "" || clientSecret == "" {
-		var ok bool
-		clientID, clientSecret, ok = c.Request.BasicAuth()
-		if !ok {
-			utils.CustomControllerError(c, http.StatusBadRequest, "Client id and secret not provided")
-			return
-		}
+	if clientID == "" && clientSecret == "" {
+		clientID, clientSecret, _ = c.Request.BasicAuth()
 	}
 
-	idToken, accessToken, err := oc.oidcService.CreateTokens(input.Code, input.GrantType, clientID, clientSecret)
+	idToken, accessToken, err := oc.oidcService.CreateTokens(input.Code, input.GrantType, clientID, clientSecret, input.CodeVerifier)
 	if err != nil {
-		if errors.Is(err, common.ErrOidcGrantTypeNotSupported) ||
-			errors.Is(err, common.ErrOidcMissingClientCredentials) ||
-			errors.Is(err, common.ErrOidcClientSecretInvalid) ||
-			errors.Is(err, common.ErrOidcInvalidAuthorizationCode) {
-			utils.CustomControllerError(c, http.StatusBadRequest, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
@@ -132,14 +110,14 @@ func (oc *OidcController) userInfoHandler(c *gin.Context) {
 	token := strings.Split(c.GetHeader("Authorization"), " ")[1]
 	jwtClaims, err := oc.jwtService.VerifyOauthAccessToken(token)
 	if err != nil {
-		utils.CustomControllerError(c, http.StatusUnauthorized, common.ErrTokenInvalidOrExpired.Error())
+		c.Error(err)
 		return
 	}
 	userID := jwtClaims.Subject
 	clientId := jwtClaims.Audience[0]
 	claims, err := oc.oidcService.GetUserClaimsForClient(userID, clientId)
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -150,7 +128,7 @@ func (oc *OidcController) getClientHandler(c *gin.Context) {
 	clientId := c.Param("id")
 	client, err := oc.oidcService.GetClient(clientId)
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -171,7 +149,7 @@ func (oc *OidcController) getClientHandler(c *gin.Context) {
 		}
 	}
 
-	utils.ControllerError(c, err)
+	c.Error(err)
 }
 
 func (oc *OidcController) listClientsHandler(c *gin.Context) {
@@ -181,13 +159,13 @@ func (oc *OidcController) listClientsHandler(c *gin.Context) {
 
 	clients, pagination, err := oc.oidcService.ListClients(searchTerm, page, pageSize)
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var clientsDto []dto.OidcClientDto
 	if err := dto.MapStructList(clients, &clientsDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -200,19 +178,19 @@ func (oc *OidcController) listClientsHandler(c *gin.Context) {
 func (oc *OidcController) createClientHandler(c *gin.Context) {
 	var input dto.OidcClientCreateDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	client, err := oc.oidcService.CreateClient(input, c.GetString("userID"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var clientDto dto.OidcClientDto
 	if err := dto.MapStruct(client, &clientDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -222,7 +200,7 @@ func (oc *OidcController) createClientHandler(c *gin.Context) {
 func (oc *OidcController) deleteClientHandler(c *gin.Context) {
 	err := oc.oidcService.DeleteClient(c.Param("id"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -232,19 +210,19 @@ func (oc *OidcController) deleteClientHandler(c *gin.Context) {
 func (oc *OidcController) updateClientHandler(c *gin.Context) {
 	var input dto.OidcClientCreateDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	client, err := oc.oidcService.UpdateClient(c.Param("id"), input)
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var clientDto dto.OidcClientDto
 	if err := dto.MapStruct(client, &clientDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -254,7 +232,7 @@ func (oc *OidcController) updateClientHandler(c *gin.Context) {
 func (oc *OidcController) createClientSecretHandler(c *gin.Context) {
 	secret, err := oc.oidcService.CreateClientSecret(c.Param("id"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -264,7 +242,7 @@ func (oc *OidcController) createClientSecretHandler(c *gin.Context) {
 func (oc *OidcController) getClientLogoHandler(c *gin.Context) {
 	imagePath, mimeType, err := oc.oidcService.GetClientLogo(c.Param("id"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -275,17 +253,13 @@ func (oc *OidcController) getClientLogoHandler(c *gin.Context) {
 func (oc *OidcController) updateClientLogoHandler(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	err = oc.oidcService.UpdateClientLogo(c.Param("id"), file)
 	if err != nil {
-		if errors.Is(err, common.ErrFileTypeNotSupported) {
-			utils.CustomControllerError(c, http.StatusBadRequest, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
@@ -295,7 +269,7 @@ func (oc *OidcController) updateClientLogoHandler(c *gin.Context) {
 func (oc *OidcController) deleteClientLogoHandler(c *gin.Context) {
 	err := oc.oidcService.DeleteClientLogo(c.Param("id"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 

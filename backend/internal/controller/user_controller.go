@@ -1,22 +1,21 @@
 package controller
 
 import (
-	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/stonith404/pocket-id/backend/internal/common"
 	"github.com/stonith404/pocket-id/backend/internal/dto"
 	"github.com/stonith404/pocket-id/backend/internal/middleware"
 	"github.com/stonith404/pocket-id/backend/internal/service"
-	"github.com/stonith404/pocket-id/backend/internal/utils"
 	"golang.org/x/time/rate"
 	"net/http"
 	"strconv"
 	"time"
 )
 
-func NewUserController(group *gin.RouterGroup, jwtAuthMiddleware *middleware.JwtAuthMiddleware, rateLimitMiddleware *middleware.RateLimitMiddleware, userService *service.UserService) {
+func NewUserController(group *gin.RouterGroup, jwtAuthMiddleware *middleware.JwtAuthMiddleware, rateLimitMiddleware *middleware.RateLimitMiddleware, userService *service.UserService, appConfigService *service.AppConfigService) {
 	uc := UserController{
-		UserService: userService,
+		UserService:      userService,
+		AppConfigService: appConfigService,
 	}
 
 	group.GET("/users", jwtAuthMiddleware.Add(true), uc.listUsersHandler)
@@ -33,7 +32,8 @@ func NewUserController(group *gin.RouterGroup, jwtAuthMiddleware *middleware.Jwt
 }
 
 type UserController struct {
-	UserService *service.UserService
+	UserService      *service.UserService
+	AppConfigService *service.AppConfigService
 }
 
 func (uc *UserController) listUsersHandler(c *gin.Context) {
@@ -43,13 +43,13 @@ func (uc *UserController) listUsersHandler(c *gin.Context) {
 
 	users, pagination, err := uc.UserService.ListUsers(searchTerm, page, pageSize)
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var usersDto []dto.UserDto
 	if err := dto.MapStructList(users, &usersDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -62,13 +62,13 @@ func (uc *UserController) listUsersHandler(c *gin.Context) {
 func (uc *UserController) getUserHandler(c *gin.Context) {
 	user, err := uc.UserService.GetUser(c.Param("id"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
 	if err := dto.MapStruct(user, &userDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -78,13 +78,13 @@ func (uc *UserController) getUserHandler(c *gin.Context) {
 func (uc *UserController) getCurrentUserHandler(c *gin.Context) {
 	user, err := uc.UserService.GetUser(c.GetString("userID"))
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
 	if err := dto.MapStruct(user, &userDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -93,7 +93,7 @@ func (uc *UserController) getCurrentUserHandler(c *gin.Context) {
 
 func (uc *UserController) deleteUserHandler(c *gin.Context) {
 	if err := uc.UserService.DeleteUser(c.Param("id")); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -103,23 +103,19 @@ func (uc *UserController) deleteUserHandler(c *gin.Context) {
 func (uc *UserController) createUserHandler(c *gin.Context) {
 	var input dto.UserCreateDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
 	user, err := uc.UserService.CreateUser(input)
 	if err != nil {
-		if errors.Is(err, common.ErrEmailTaken) || errors.Is(err, common.ErrUsernameTaken) {
-			utils.CustomControllerError(c, http.StatusConflict, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
 	if err := dto.MapStruct(user, &userDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -131,19 +127,23 @@ func (uc *UserController) updateUserHandler(c *gin.Context) {
 }
 
 func (uc *UserController) updateCurrentUserHandler(c *gin.Context) {
+	if uc.AppConfigService.DbConfig.AllowOwnAccountEdit.Value != "true" {
+		c.Error(&common.AccountEditNotAllowedError{})
+		return
+	}
 	uc.updateUser(c, true)
 }
 
 func (uc *UserController) createOneTimeAccessTokenHandler(c *gin.Context) {
 	var input dto.OneTimeAccessTokenCreateDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
-	token, err := uc.UserService.CreateOneTimeAccessToken(input.UserID, input.ExpiresAt)
+	token, err := uc.UserService.CreateOneTimeAccessToken(input.UserID, input.ExpiresAt, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -153,32 +153,30 @@ func (uc *UserController) createOneTimeAccessTokenHandler(c *gin.Context) {
 func (uc *UserController) exchangeOneTimeAccessTokenHandler(c *gin.Context) {
 	user, token, err := uc.UserService.ExchangeOneTimeAccessToken(c.Param("token"))
 	if err != nil {
-		if errors.Is(err, common.ErrTokenInvalidOrExpired) {
-			utils.CustomControllerError(c, http.StatusUnauthorized, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
-		return
-	}
-
-	c.SetCookie("access_token", token, int(time.Hour.Seconds()), "/", "", false, true)
-	c.JSON(http.StatusOK, user)
-}
-
-func (uc *UserController) getSetupAccessTokenHandler(c *gin.Context) {
-	user, token, err := uc.UserService.SetupInitialAdmin()
-	if err != nil {
-		if errors.Is(err, common.ErrSetupAlreadyCompleted) {
-			utils.CustomControllerError(c, http.StatusBadRequest, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
 	if err := dto.MapStruct(user, &userDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
+		return
+	}
+
+	c.SetCookie("access_token", token, int(time.Hour.Seconds()), "/", "", false, true)
+	c.JSON(http.StatusOK, userDto)
+}
+
+func (uc *UserController) getSetupAccessTokenHandler(c *gin.Context) {
+	user, token, err := uc.UserService.SetupInitialAdmin()
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	var userDto dto.UserDto
+	if err := dto.MapStruct(user, &userDto); err != nil {
+		c.Error(err)
 		return
 	}
 
@@ -189,7 +187,7 @@ func (uc *UserController) getSetupAccessTokenHandler(c *gin.Context) {
 func (uc *UserController) updateUser(c *gin.Context, updateOwnUser bool) {
 	var input dto.UserCreateDto
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 
@@ -202,17 +200,13 @@ func (uc *UserController) updateUser(c *gin.Context, updateOwnUser bool) {
 
 	user, err := uc.UserService.UpdateUser(userID, input, updateOwnUser)
 	if err != nil {
-		if errors.Is(err, common.ErrEmailTaken) || errors.Is(err, common.ErrUsernameTaken) {
-			utils.CustomControllerError(c, http.StatusConflict, err.Error())
-		} else {
-			utils.ControllerError(c, err)
-		}
+		c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
 	if err := dto.MapStruct(user, &userDto); err != nil {
-		utils.ControllerError(c, err)
+		c.Error(err)
 		return
 	}
 

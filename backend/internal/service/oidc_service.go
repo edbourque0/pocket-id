@@ -1,11 +1,14 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"github.com/stonith404/pocket-id/backend/internal/common"
 	"github.com/stonith404/pocket-id/backend/internal/dto"
 	"github.com/stonith404/pocket-id/backend/internal/model"
+	datatype "github.com/stonith404/pocket-id/backend/internal/model/types"
 	"github.com/stonith404/pocket-id/backend/internal/utils"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -17,18 +20,20 @@ import (
 )
 
 type OidcService struct {
-	db               *gorm.DB
-	jwtService       *JwtService
-	appConfigService *AppConfigService
-	auditLogService  *AuditLogService
+	db                 *gorm.DB
+	jwtService         *JwtService
+	appConfigService   *AppConfigService
+	auditLogService    *AuditLogService
+	customClaimService *CustomClaimService
 }
 
-func NewOidcService(db *gorm.DB, jwtService *JwtService, appConfigService *AppConfigService, auditLogService *AuditLogService) *OidcService {
+func NewOidcService(db *gorm.DB, jwtService *JwtService, appConfigService *AppConfigService, auditLogService *AuditLogService, customClaimService *CustomClaimService) *OidcService {
 	return &OidcService{
-		db:               db,
-		jwtService:       jwtService,
-		appConfigService: appConfigService,
-		auditLogService:  auditLogService,
+		db:                 db,
+		jwtService:         jwtService,
+		appConfigService:   appConfigService,
+		auditLogService:    auditLogService,
+		customClaimService: customClaimService,
 	}
 }
 
@@ -36,16 +41,20 @@ func (s *OidcService) Authorize(input dto.AuthorizeOidcClientRequestDto, userID,
 	var userAuthorizedOIDCClient model.UserAuthorizedOidcClient
 	s.db.Preload("Client").First(&userAuthorizedOIDCClient, "client_id = ? AND user_id = ?", input.ClientID, userID)
 
-	if userAuthorizedOIDCClient.Scope != input.Scope {
-		return "", "", common.ErrOidcMissingAuthorization
+	if userAuthorizedOIDCClient.Client.IsPublic && input.CodeChallenge == "" {
+		return "", "", &common.OidcMissingCodeChallengeError{}
 	}
 
-	callbackURL, err := getCallbackURL(userAuthorizedOIDCClient.Client, input.CallbackURL)
+	if userAuthorizedOIDCClient.Scope != input.Scope {
+		return "", "", &common.OidcMissingAuthorizationError{}
+	}
+
+	callbackURL, err := s.getCallbackURL(userAuthorizedOIDCClient.Client, input.CallbackURL)
 	if err != nil {
 		return "", "", err
 	}
 
-	code, err := s.createAuthorizationCode(input.ClientID, userID, input.Scope, input.Nonce)
+	code, err := s.createAuthorizationCode(input.ClientID, userID, input.Scope, input.Nonce, input.CodeChallenge, input.CodeChallengeMethod)
 	if err != nil {
 		return "", "", err
 	}
@@ -61,7 +70,11 @@ func (s *OidcService) AuthorizeNewClient(input dto.AuthorizeOidcClientRequestDto
 		return "", "", err
 	}
 
-	callbackURL, err := getCallbackURL(client, input.CallbackURL)
+	if client.IsPublic && input.CodeChallenge == "" {
+		return "", "", &common.OidcMissingCodeChallengeError{}
+	}
+
+	callbackURL, err := s.getCallbackURL(client, input.CallbackURL)
 	if err != nil {
 		return "", "", err
 	}
@@ -80,7 +93,7 @@ func (s *OidcService) AuthorizeNewClient(input dto.AuthorizeOidcClientRequestDto
 		}
 	}
 
-	code, err := s.createAuthorizationCode(input.ClientID, userID, input.Scope, input.Nonce)
+	code, err := s.createAuthorizationCode(input.ClientID, userID, input.Scope, input.Nonce, input.CodeChallenge, input.CodeChallengeMethod)
 	if err != nil {
 		return "", "", err
 	}
@@ -90,13 +103,9 @@ func (s *OidcService) AuthorizeNewClient(input dto.AuthorizeOidcClientRequestDto
 	return code, callbackURL, nil
 }
 
-func (s *OidcService) CreateTokens(code, grantType, clientID, clientSecret string) (string, string, error) {
+func (s *OidcService) CreateTokens(code, grantType, clientID, clientSecret, codeVerifier string) (string, string, error) {
 	if grantType != "authorization_code" {
-		return "", "", common.ErrOidcGrantTypeNotSupported
-	}
-
-	if clientID == "" || clientSecret == "" {
-		return "", "", common.ErrOidcMissingClientCredentials
+		return "", "", &common.OidcGrantTypeNotSupportedError{}
 	}
 
 	var client model.OidcClient
@@ -104,19 +113,33 @@ func (s *OidcService) CreateTokens(code, grantType, clientID, clientSecret strin
 		return "", "", err
 	}
 
-	err := bcrypt.CompareHashAndPassword([]byte(client.Secret), []byte(clientSecret))
-	if err != nil {
-		return "", "", common.ErrOidcClientSecretInvalid
+	// Verify the client secret if the client is not public
+	if !client.IsPublic {
+		if clientID == "" || clientSecret == "" {
+			return "", "", &common.OidcMissingClientCredentialsError{}
+		}
+
+		err := bcrypt.CompareHashAndPassword([]byte(client.Secret), []byte(clientSecret))
+		if err != nil {
+			return "", "", &common.OidcClientSecretInvalidError{}
+		}
 	}
 
 	var authorizationCodeMetaData model.OidcAuthorizationCode
-	err = s.db.Preload("User").First(&authorizationCodeMetaData, "code = ?", code).Error
+	err := s.db.Preload("User").First(&authorizationCodeMetaData, "code = ?", code).Error
 	if err != nil {
-		return "", "", common.ErrOidcInvalidAuthorizationCode
+		return "", "", &common.OidcInvalidAuthorizationCodeError{}
 	}
 
-	if authorizationCodeMetaData.ClientID != clientID && authorizationCodeMetaData.ExpiresAt.Before(time.Now()) {
-		return "", "", common.ErrOidcInvalidAuthorizationCode
+	// If the client is public, the code verifier must match the code challenge
+	if client.IsPublic {
+		if !s.validateCodeVerifier(codeVerifier, *authorizationCodeMetaData.CodeChallenge, *authorizationCodeMetaData.CodeChallengeMethodSha256) {
+			return "", "", &common.OidcInvalidCodeVerifierError{}
+		}
+	}
+
+	if authorizationCodeMetaData.ClientID != clientID && authorizationCodeMetaData.ExpiresAt.ToTime().Before(time.Now()) {
+		return "", "", &common.OidcInvalidAuthorizationCodeError{}
 	}
 
 	userClaims, err := s.GetUserClaimsForClient(authorizationCodeMetaData.UserID, clientID)
@@ -183,6 +206,7 @@ func (s *OidcService) UpdateClient(clientID string, input dto.OidcClientCreateDt
 
 	client.Name = input.Name
 	client.CallbackURLs = input.CallbackURLs
+	client.IsPublic = input.IsPublic
 
 	if err := s.db.Save(&client).Error; err != nil {
 		return model.OidcClient{}, err
@@ -248,7 +272,7 @@ func (s *OidcService) GetClientLogo(clientID string) (string, string, error) {
 func (s *OidcService) UpdateClientLogo(clientID string, file *multipart.FileHeader) error {
 	fileType := utils.GetFileExtension(file.Filename)
 	if mimeType := utils.GetImageMimeType(fileType); mimeType == "" {
-		return common.ErrFileTypeNotSupported
+		return &common.FileTypeNotSupportedError{}
 	}
 
 	imagePath := fmt.Sprintf("%s/oidc-client-images/%s.%s", common.EnvConfig.UploadPath, clientID, fileType)
@@ -301,7 +325,7 @@ func (s *OidcService) DeleteClientLogo(clientID string) error {
 
 func (s *OidcService) GetUserClaimsForClient(userID string, clientID string) (map[string]interface{}, error) {
 	var authorizedOidcClient model.UserAuthorizedOidcClient
-	if err := s.db.Preload("User").First(&authorizedOidcClient, "user_id = ? AND client_id = ?", userID, clientID).Error; err != nil {
+	if err := s.db.Preload("User.UserGroups").First(&authorizedOidcClient, "user_id = ? AND client_id = ?", userID, clientID).Error; err != nil {
 		return nil, err
 	}
 
@@ -314,18 +338,38 @@ func (s *OidcService) GetUserClaimsForClient(userID string, clientID string) (ma
 
 	if strings.Contains(scope, "email") {
 		claims["email"] = user.Email
+		claims["email_verified"] = s.appConfigService.DbConfig.EmailsVerified.Value == "true"
+	}
+
+	if strings.Contains(scope, "groups") {
+		userGroups := make([]string, len(user.UserGroups))
+		for i, group := range user.UserGroups {
+			userGroups[i] = group.Name
+		}
+		claims["groups"] = userGroups
 	}
 
 	profileClaims := map[string]interface{}{
 		"given_name":         user.FirstName,
 		"family_name":        user.LastName,
-		"name":               user.FirstName + " " + user.LastName,
+		"name":               user.FullName(),
 		"preferred_username": user.Username,
 	}
 
 	if strings.Contains(scope, "profile") {
+		// Add profile claims
 		for k, v := range profileClaims {
 			claims[k] = v
+		}
+
+		// Add custom claims
+		customClaims, err := s.customClaimService.GetCustomClaimsForUserWithUserGroups(userID)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, customClaim := range customClaims {
+			claims[customClaim.Key] = customClaim.Value
 		}
 	}
 	if strings.Contains(scope, "email") {
@@ -335,19 +379,23 @@ func (s *OidcService) GetUserClaimsForClient(userID string, clientID string) (ma
 	return claims, nil
 }
 
-func (s *OidcService) createAuthorizationCode(clientID string, userID string, scope string, nonce string) (string, error) {
+func (s *OidcService) createAuthorizationCode(clientID string, userID string, scope string, nonce string, codeChallenge string, codeChallengeMethod string) (string, error) {
 	randomString, err := utils.GenerateRandomAlphanumericString(32)
 	if err != nil {
 		return "", err
 	}
 
+	codeChallengeMethodSha256 := strings.ToUpper(codeChallengeMethod) == "S256"
+
 	oidcAuthorizationCode := model.OidcAuthorizationCode{
-		ExpiresAt: time.Now().Add(15 * time.Minute),
-		Code:      randomString,
-		ClientID:  clientID,
-		UserID:    userID,
-		Scope:     scope,
-		Nonce:     nonce,
+		ExpiresAt:                 datatype.DateTime(time.Now().Add(15 * time.Minute)),
+		Code:                      randomString,
+		ClientID:                  clientID,
+		UserID:                    userID,
+		Scope:                     scope,
+		Nonce:                     nonce,
+		CodeChallenge:             &codeChallenge,
+		CodeChallengeMethodSha256: &codeChallengeMethodSha256,
 	}
 
 	if err := s.db.Create(&oidcAuthorizationCode).Error; err != nil {
@@ -357,7 +405,23 @@ func (s *OidcService) createAuthorizationCode(clientID string, userID string, sc
 	return randomString, nil
 }
 
-func getCallbackURL(client model.OidcClient, inputCallbackURL string) (callbackURL string, err error) {
+func (s *OidcService) validateCodeVerifier(codeVerifier, codeChallenge string, codeChallengeMethodSha256 bool) bool {
+	if !codeChallengeMethodSha256 {
+		return codeVerifier == codeChallenge
+	}
+
+	// Compute SHA-256 hash of the codeVerifier
+	h := sha256.New()
+	h.Write([]byte(codeVerifier))
+	codeVerifierHash := h.Sum(nil)
+
+	// Base64 URL encode the verifier hash
+	encodedVerifierHash := base64.RawURLEncoding.EncodeToString(codeVerifierHash)
+
+	return encodedVerifierHash == codeChallenge
+}
+
+func (s *OidcService) getCallbackURL(client model.OidcClient, inputCallbackURL string) (callbackURL string, err error) {
 	if inputCallbackURL == "" {
 		return client.CallbackURLs[0], nil
 	}
@@ -365,5 +429,5 @@ func getCallbackURL(client model.OidcClient, inputCallbackURL string) (callbackU
 		return inputCallbackURL, nil
 	}
 
-	return "", common.ErrOidcInvalidCallbackURL
+	return "", &common.OidcInvalidCallbackURLError{}
 }

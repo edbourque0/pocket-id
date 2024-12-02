@@ -4,14 +4,10 @@ import APIService from './api-service';
 
 export default class UserService extends APIService {
 	async list(search?: string, pagination?: PaginationRequest) {
-		const page = pagination?.page || 1;
-		const limit = pagination?.limit || 10;
-
 		const res = await this.api.get('/users', {
 			params: {
 				search,
-				page,
-				limit
+				...pagination
 			}
 		});
 		return res.data as Paginated<User>;
@@ -46,10 +42,10 @@ export default class UserService extends APIService {
 		await this.api.delete(`/users/${id}`);
 	}
 
-	async createOneTimeAccessToken(userId: string) {
+	async createOneTimeAccessToken(userId: string, expiresAt: Date) {
 		const res = await this.api.post(`/users/${userId}/one-time-access-token`, {
 			userId,
-			expiresAt: new Date(Date.now() + 1000 * 60 * 5).toISOString()
+			expiresAt
 		});
 		return res.data.token;
 	}

@@ -11,6 +11,8 @@ type AuditLog struct {
 
 	Event     AuditLogEvent
 	IpAddress string
+	Country   string
+	City      string
 	UserAgent string
 	UserID    string
 	Data      AuditLogData
@@ -21,9 +23,10 @@ type AuditLogData map[string]string
 type AuditLogEvent string
 
 const (
-	AuditLogEventSignIn                 AuditLogEvent = "SIGN_IN"
-	AuditLogEventClientAuthorization    AuditLogEvent = "CLIENT_AUTHORIZATION"
-	AuditLogEventNewClientAuthorization AuditLogEvent = "NEW_CLIENT_AUTHORIZATION"
+	AuditLogEventSignIn                   AuditLogEvent = "SIGN_IN"
+	AuditLogEventOneTimeAccessTokenSignIn AuditLogEvent = "TOKEN_SIGN_IN"
+	AuditLogEventClientAuthorization      AuditLogEvent = "CLIENT_AUTHORIZATION"
+	AuditLogEventNewClientAuthorization   AuditLogEvent = "NEW_CLIENT_AUTHORIZATION"
 )
 
 // Scan and Value methods for GORM to handle the custom type

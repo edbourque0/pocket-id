@@ -2,7 +2,9 @@ package dto
 
 import (
 	"errors"
+	"github.com/stonith404/pocket-id/backend/internal/model/types"
 	"reflect"
+	"time"
 )
 
 // MapStructList maps a list of source structs to a list of destination structs
@@ -57,13 +59,35 @@ func mapStructInternal(sourceVal reflect.Value, destVal reflect.Value) error {
 			// Handle direct assignment for simple types
 			if sourceField.Type() == destField.Type() {
 				destField.Set(sourceField)
+
 			} else if sourceField.Kind() == reflect.Slice && destField.Kind() == reflect.Slice {
 				// Handle slices
 				if sourceField.Type().Elem() == destField.Type().Elem() {
+					// Direct assignment for slices of primitive types or non-struct elements
 					newSlice := reflect.MakeSlice(destField.Type(), sourceField.Len(), sourceField.Cap())
 
 					for j := 0; j < sourceField.Len(); j++ {
 						newSlice.Index(j).Set(sourceField.Index(j))
+					}
+
+					destField.Set(newSlice)
+
+				} else if sourceField.Type().Elem().Kind() == reflect.Struct && destField.Type().Elem().Kind() == reflect.Struct {
+					// Recursively map slices of structs
+					newSlice := reflect.MakeSlice(destField.Type(), sourceField.Len(), sourceField.Cap())
+
+					for j := 0; j < sourceField.Len(); j++ {
+						// Get the element from both source and destination slice
+						sourceElem := sourceField.Index(j)
+						destElem := reflect.New(destField.Type().Elem()).Elem()
+
+						// Recursively map the struct elements
+						if err := mapStructInternal(sourceElem, destElem); err != nil {
+							return err
+						}
+
+						// Set the mapped element in the new slice
+						newSlice.Index(j).Set(destElem)
 					}
 
 					destField.Set(newSlice)
@@ -73,7 +97,18 @@ func mapStructInternal(sourceVal reflect.Value, destVal reflect.Value) error {
 				if err := mapStructInternal(sourceField, destField); err != nil {
 					return err
 				}
+			} else {
+				// Type switch for specific type conversions
+				switch sourceField.Interface().(type) {
+				case datatype.DateTime:
+					// Convert datatype.DateTime to time.Time
+					if sourceField.Type() == reflect.TypeOf(datatype.DateTime{}) && destField.Type() == reflect.TypeOf(time.Time{}) {
+						dateValue := sourceField.Interface().(datatype.DateTime)
+						destField.Set(reflect.ValueOf(dateValue.ToTime()))
+					}
+				}
 			}
+
 		}
 	}
 

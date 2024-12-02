@@ -1,18 +1,29 @@
-export type AllAppConfig = {
+export type AppConfig = {
 	appName: string;
-	sessionDuration: string;
-	emailEnabled: string;
+	allowOwnAccountEdit: boolean;
+};
+
+export type AllAppConfig = AppConfig & {
+	sessionDuration: number;
+	emailsVerified: boolean;
+	emailEnabled: boolean;
 	smtpHost: string;
-	smtpPort: string;
+	smtpPort: number;
 	smtpFrom: string;
 	smtpUser: string;
 	smtpPassword: string;
+	smtpTls: boolean;
+	smtpSkipCertVerify: boolean;
 };
-
-export type AppConfig = AllAppConfig;
 
 export type AppConfigRawResponse = {
 	key: string;
 	type: string;
 	value: string;
 }[];
+
+export type AppVersionInformation = {
+	isUpToDate: boolean;
+	newestVersion: string;
+	currentVersion: string;
+};

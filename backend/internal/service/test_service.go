@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/stonith404/pocket-id/backend/internal/model/types"
 	"log"
 	"os"
 	"time"
@@ -56,6 +57,30 @@ func (s *TestService) SeedDatabase() error {
 			}
 		}
 
+		userGroups := []model.UserGroup{
+			{
+				Base: model.Base{
+					ID: "4110f814-56f1-4b28-8998-752b69bc97c0e",
+				},
+				Name:         "developers",
+				FriendlyName: "Developers",
+				Users:        []model.User{users[0], users[1]},
+			},
+			{
+				Base: model.Base{
+					ID: "adab18bf-f89d-4087-9ee1-70ff15b48211",
+				},
+				Name:         "designers",
+				FriendlyName: "Designers",
+				Users:        []model.User{users[0]},
+			},
+		}
+		for _, group := range userGroups {
+			if err := tx.Create(&group).Error; err != nil {
+				return err
+			}
+		}
+
 		oidcClients := []model.OidcClient{
 			{
 				Base: model.Base{
@@ -87,7 +112,7 @@ func (s *TestService) SeedDatabase() error {
 			Code:      "auth-code",
 			Scope:     "openid profile",
 			Nonce:     "nonce",
-			ExpiresAt: time.Now().Add(1 * time.Hour),
+			ExpiresAt: datatype.DateTime(time.Now().Add(1 * time.Hour)),
 			UserID:    users[0].ID,
 			ClientID:  oidcClients[0].ID,
 		}
@@ -97,7 +122,7 @@ func (s *TestService) SeedDatabase() error {
 
 		accessToken := model.OneTimeAccessToken{
 			Token:     "one-time-token",
-			ExpiresAt: time.Now().Add(1 * time.Hour),
+			ExpiresAt: datatype.DateTime(time.Now().Add(1 * time.Hour)),
 			UserID:    users[0].ID,
 		}
 		if err := tx.Create(&accessToken).Error; err != nil {
@@ -113,8 +138,8 @@ func (s *TestService) SeedDatabase() error {
 			return err
 		}
 
-		publicKey1, err := getCborPublicKey("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwcOo5KV169KR67QEHrcYkeXE3CCxv2BgwnSq4VYTQxyLtdmKxegexa8JdwFKhKXa2BMI9xaN15BoL6wSCRFJhg==")
-		publicKey2, err := getCborPublicKey("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESq/wR8QbBu3dKnpaw/v0mDxFFDwnJ/L5XHSg2tAmq5x1BpSMmIr3+DxCbybVvGRmWGh8kKhy7SMnK91M6rFHTA==")
+		publicKey1, err := s.getCborPublicKey("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwcOo5KV169KR67QEHrcYkeXE3CCxv2BgwnSq4VYTQxyLtdmKxegexa8JdwFKhKXa2BMI9xaN15BoL6wSCRFJhg==")
+		publicKey2, err := s.getCborPublicKey("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESq/wR8QbBu3dKnpaw/v0mDxFFDwnJ/L5XHSg2tAmq5x1BpSMmIr3+DxCbybVvGRmWGh8kKhy7SMnK91M6rFHTA==")
 		if err != nil {
 			return err
 		}
@@ -162,17 +187,16 @@ func (s *TestService) ResetDatabase() error {
 			return err
 		}
 
+		// Delete all rows from all tables
 		for _, table := range tables {
 			if err := tx.Exec("DELETE FROM " + table).Error; err != nil {
 				return err
 			}
 		}
+
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	err = s.appConfigService.InitDbConfig()
+
 	return err
 }
 
@@ -190,8 +214,23 @@ func (s *TestService) ResetApplicationImages() error {
 	return nil
 }
 
+func (s *TestService) ResetAppConfig() error {
+	// Reseed the config variables
+	if err := s.appConfigService.InitDbConfig(); err != nil {
+		return err
+	}
+
+	// Reset all app config variables to their default values
+	if err := s.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&model.AppConfigVariable{}).Update("value", "").Error; err != nil {
+		return err
+	}
+
+	// Reload the app config from the database after resetting the values
+	return s.appConfigService.LoadDbConfigFromDb()
+}
+
 // getCborPublicKey decodes a Base64 encoded public key and returns the CBOR encoded COSE key
-func getCborPublicKey(base64PublicKey string) ([]byte, error) {
+func (s *TestService) getCborPublicKey(base64PublicKey string) ([]byte, error) {
 	decodedKey, err := base64.StdEncoding.DecodeString(base64PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base64 key: %w", err)

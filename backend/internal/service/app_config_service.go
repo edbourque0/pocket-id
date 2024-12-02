@@ -31,32 +31,49 @@ func NewAppConfigService(db *gorm.DB) *AppConfigService {
 
 var defaultDbConfig = model.AppConfig{
 	AppName: model.AppConfigVariable{
-		Key:      "appName",
-		Type:     "string",
-		IsPublic: true,
-		Value:    "Pocket ID",
+		Key:          "appName",
+		Type:         "string",
+		IsPublic:     true,
+		DefaultValue: "Pocket ID",
 	},
 	SessionDuration: model.AppConfigVariable{
-		Key:   "sessionDuration",
-		Type:  "number",
-		Value: "60",
+		Key:          "sessionDuration",
+		Type:         "number",
+		DefaultValue: "60",
+	},
+	EmailsVerified: model.AppConfigVariable{
+		Key:          "emailsVerified",
+		Type:         "bool",
+		DefaultValue: "false",
+	},
+	AllowOwnAccountEdit: model.AppConfigVariable{
+		Key:          "allowOwnAccountEdit",
+		Type:         "bool",
+		IsPublic:     true,
+		DefaultValue: "true",
 	},
 	BackgroundImageType: model.AppConfigVariable{
-		Key:        "backgroundImageType",
-		Type:       "string",
-		IsInternal: true,
-		Value:      "jpg",
+		Key:          "backgroundImageType",
+		Type:         "string",
+		IsInternal:   true,
+		DefaultValue: "jpg",
 	},
-	LogoImageType: model.AppConfigVariable{
-		Key:        "logoImageType",
-		Type:       "string",
-		IsInternal: true,
-		Value:      "svg",
+	LogoLightImageType: model.AppConfigVariable{
+		Key:          "logoLightImageType",
+		Type:         "string",
+		IsInternal:   true,
+		DefaultValue: "svg",
+	},
+	LogoDarkImageType: model.AppConfigVariable{
+		Key:          "logoDarkImageType",
+		Type:         "string",
+		IsInternal:   true,
+		DefaultValue: "svg",
 	},
 	EmailEnabled: model.AppConfigVariable{
-		Key:   "emailEnabled",
-		Type:  "bool",
-		Value: "false",
+		Key:          "emailEnabled",
+		Type:         "bool",
+		DefaultValue: "false",
 	},
 	SmtpHost: model.AppConfigVariable{
 		Key:  "smtpHost",
@@ -77,6 +94,16 @@ var defaultDbConfig = model.AppConfig{
 	SmtpPassword: model.AppConfigVariable{
 		Key:  "smtpPassword",
 		Type: "string",
+	},
+	SmtpTls: model.AppConfigVariable{
+		Key:          "smtpTls",
+		Type:         "bool",
+		DefaultValue: "true",
+	},
+	SmtpSkipCertVerify: model.AppConfigVariable{
+		Key:          "smtpSkipCertVerify",
+		Type:         "bool",
+		DefaultValue: "false",
 	},
 }
 
@@ -109,7 +136,7 @@ func (s *AppConfigService) UpdateAppConfig(input dto.AppConfigUpdateDto) ([]mode
 
 	tx.Commit()
 
-	if err := s.loadDbConfigFromDb(); err != nil {
+	if err := s.LoadDbConfigFromDb(); err != nil {
 		return nil, err
 	}
 
@@ -123,7 +150,7 @@ func (s *AppConfigService) UpdateImageType(imageName string, fileType string) er
 		return err
 	}
 
-	return s.loadDbConfigFromDb()
+	return s.LoadDbConfigFromDb()
 }
 
 func (s *AppConfigService) ListAppConfig(showAll bool) ([]model.AppConfigVariable, error) {
@@ -140,6 +167,13 @@ func (s *AppConfigService) ListAppConfig(showAll bool) ([]model.AppConfigVariabl
 		return nil, err
 	}
 
+	// Set the value to the default value if it is empty
+	for i := range configuration {
+		if configuration[i].Value == "" && configuration[i].DefaultValue != "" {
+			configuration[i].Value = configuration[i].DefaultValue
+		}
+	}
+
 	return configuration, nil
 }
 
@@ -147,7 +181,7 @@ func (s *AppConfigService) UpdateImage(uploadedFile *multipart.FileHeader, image
 	fileType := utils.GetFileExtension(uploadedFile.Filename)
 	mimeType := utils.GetImageMimeType(fileType)
 	if mimeType == "" {
-		return common.ErrFileTypeNotSupported
+		return &common.FileTypeNotSupportedError{}
 	}
 
 	// Delete the old image if it has a different file type
@@ -195,10 +229,11 @@ func (s *AppConfigService) InitDbConfig() error {
 		}
 
 		// Update existing configuration if it differs from the default
-		if storedConfigVar.Type != defaultConfigVar.Type || storedConfigVar.IsPublic != defaultConfigVar.IsPublic || storedConfigVar.IsInternal != defaultConfigVar.IsInternal {
+		if storedConfigVar.Type != defaultConfigVar.Type || storedConfigVar.IsPublic != defaultConfigVar.IsPublic || storedConfigVar.IsInternal != defaultConfigVar.IsInternal || storedConfigVar.DefaultValue != defaultConfigVar.DefaultValue {
 			storedConfigVar.Type = defaultConfigVar.Type
 			storedConfigVar.IsPublic = defaultConfigVar.IsPublic
 			storedConfigVar.IsInternal = defaultConfigVar.IsInternal
+			storedConfigVar.DefaultValue = defaultConfigVar.DefaultValue
 			if err := s.db.Save(&storedConfigVar).Error; err != nil {
 				return err
 			}
@@ -218,10 +253,11 @@ func (s *AppConfigService) InitDbConfig() error {
 			}
 		}
 	}
-	return s.loadDbConfigFromDb()
+	return s.LoadDbConfigFromDb()
 }
 
-func (s *AppConfigService) loadDbConfigFromDb() error {
+// LoadDbConfigFromDb loads the configuration values from the database into the DbConfig struct.
+func (s *AppConfigService) LoadDbConfigFromDb() error {
 	dbConfigReflectValue := reflect.ValueOf(s.DbConfig).Elem()
 
 	for i := 0; i < dbConfigReflectValue.NumField(); i++ {
@@ -230,6 +266,10 @@ func (s *AppConfigService) loadDbConfigFromDb() error {
 		var storedConfigVar model.AppConfigVariable
 		if err := s.db.First(&storedConfigVar, "key = ?", currentConfigVar.Key).Error; err != nil {
 			return err
+		}
+
+		if storedConfigVar.Value == "" && storedConfigVar.DefaultValue != "" {
+			storedConfigVar.Value = storedConfigVar.DefaultValue
 		}
 
 		dbConfigField.Set(reflect.ValueOf(storedConfigVar))

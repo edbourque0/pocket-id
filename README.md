@@ -2,6 +2,8 @@
 
 Pocket ID is a simple OIDC provider that allows users to authenticate with their passkeys to your services.
 
+→ Try out the [Demo](https://pocket-id.eliasschneider.com)
+
 <img src="https://github.com/user-attachments/assets/96ac549d-b897-404a-8811-f42b16ea58e2" width="1200"/>
 
 The goal of Pocket ID is to be a simple and easy-to-use. There are other self-hosted OIDC providers like [Keycloak](https://www.keycloak.org/) or [ORY Hydra](https://www.ory.sh/hydra/) but they are often too complex for simple use cases.
@@ -11,7 +13,7 @@ Additionally, what makes Pocket ID special is that it only supports [passkey](ht
 ## Setup
 
 > [!WARNING]  
-> Pocket ID is in its early stages and may contain bugs.
+> Pocket ID is in its early stages and may contain bugs. There might be OIDC features that are not yet implemented. If you encounter any issues, please open an issue.
 
 ### Before you start
 
@@ -81,28 +83,23 @@ Required tools:
 
 You can now sign in with the admin account on `http://localhost/login/setup`.
 
-### Add Pocket ID as an OIDC provider
+### Nginx Reverse Proxy
 
-You can add a new OIDC client on `https://<your-domain>/settings/admin/oidc-clients`
+To use Nginx in front of Pocket ID, add the following configuration to increase the header buffer size because, as SvelteKit generates larger headers.
 
-After you have added the client, you can obtain the client ID and client secret.
+```nginx
+proxy_busy_buffers_size   512k;
+proxy_buffers   4 512k;
+proxy_buffer_size   256k;
+```
 
-You may need the following information:
+## Proxy Services with Pocket ID
 
-- **Authorization URL**: `https://<your-domain>/authorize`
-- **Token URL**: `https://<your-domain>/api/oidc/token`
-- **Userinfo URL**: `https://<your-domain>/api/oidc/userinfo`
-- **Certificate URL**: `https://<your-domain>/.well-known/jwks.json`
-- **OIDC Discovery URL**: `https://<your-domain>/.well-known/openid-configuration`
-- **PKCE**: `false` as this is not supported yet.
-
-### Proxy Services with Pocket ID
-
-As the goal of Pocket ID is to stay simple, we don't have a built-in proxy provider. However, you can use [OAuth2 Proxy](https://oauth2-proxy.github.io/) to add authentication to your services that don't support OIDC.
+As the goal of Pocket ID is to stay simple, we don't have a built-in proxy provider. However, you can use [OAuth2 Proxy](https://oauth2-proxy.github.io/oauth2-proxy) to add authentication to your services that don't support OIDC.
 
 See the [guide](docs/proxy-services.md) for more information.
 
-### Update
+## Update
 
 #### Docker
 
@@ -142,17 +139,21 @@ docker compose up -d
    pm2 start caddy --name pocket-id-caddy -- run --config Caddyfile
    ```
 
-### Environment variables
+## Environment variables
 
-| Variable               | Default Value           | Recommended to change | Description                                   |
-| ---------------------- | ----------------------- | --------------------- | --------------------------------------------- |
-| `PUBLIC_APP_URL`       | `http://localhost`      | yes                   | The URL where you will access the app.        |
-| `TRUST_PROXY`          | `false`                 | yes                   | Whether the app is behind a reverse proxy.    |
-| `DB_PATH`              | `data/pocket-id.db`     | no                    | The path to the SQLite database.              |
-| `UPLOAD_PATH`          | `data/uploads`          | no                    | The path where the uploaded files are stored. |
-| `INTERNAL_BACKEND_URL` | `http://localhost:8080` | no                    | The URL where the backend is accessible.      |
-| `PORT`                 | `3000`                  | no                    | The port on which the frontend should listen. |
-| `BACKEND_PORT`         | `8080`                  | no                    | The port on which the backend should listen.  |
+| Variable               | Default Value             | Recommended to change | Description                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------- | ------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_APP_URL`       | `http://localhost`        | yes                   | The URL where you will access the app.                                                                                                                                                                                                                                                                                                                                    |
+| `TRUST_PROXY`          | `false`                   | yes                   | Whether the app is behind a reverse proxy.                                                                                                                                                                                                                                                                                                                                |
+| `MAXMIND_LICENSE_KEY`  | `-`                       | yes                   | License Key for the GeoLite2 Database. The license key is required to retrieve the geographical location of IP addresses in the audit log. If the key is not provided, IP locations will be marked as "unknown." You can obtain a license key for free [here](https://www.maxmind.com/en/geolite2/signup).                                                                |
+| `PUID` and `PGID`      | `1000`                    | yes                   | The user and group ID of the user who should run Pocket ID inside the Docker container and owns the files that are mounted with the volume. You can get the `PUID` and `GUID` of your user on your host machine by using the command `id`. For more information see [this article](https://docs.linuxserver.io/general/understanding-puid-and-pgid/#using-the-variables). |
+| `DB_PATH`              | `data/pocket-id.db`       | no                    | The path to the SQLite database.                                                                                                                                                                                                                                                                                                                                          |
+| `UPLOAD_PATH`          | `data/uploads`            | no                    | The path where the uploaded files are stored.                                                                                                                                                                                                                                                                                                                             |
+| `INTERNAL_BACKEND_URL` | `http://localhost:8080`   | no                    | The URL where the backend is accessible.                                                                                                                                                                                                                                                                                                                                  |
+| `GEOLITE_DB_PATH`      | `data/GeoLite2-City.mmdb` | no                    | The path where the GeoLite2 database should be stored.                                                                                                                                                                                                                                                                                                                    |
+| `CADDY_PORT`           | `80`                      | no                    | The port on which Caddy should listen. Caddy is only active inside the Docker container. If you want to change the exposed port of the container then you sould change this variable.                                                                                                                                                                                     |
+| `PORT`                 | `3000`                    | no                    | The port on which the frontend should listen.                                                                                                                                                                                                                                                                                                                             |
+| `BACKEND_PORT`         | `8080`                    | no                    | The port on which the backend should listen.                                                                                                                                                                                                                                                                                                                              |
 
 ## Contribute
 

@@ -3,7 +3,7 @@ package model
 import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"time"
+	"github.com/stonith404/pocket-id/backend/internal/model/types"
 )
 
 type User struct {
@@ -15,7 +15,9 @@ type User struct {
 	LastName  string
 	IsAdmin   bool
 
-	Credentials []WebauthnCredential
+	CustomClaims []CustomClaim
+	UserGroups   []UserGroup `gorm:"many2many:user_groups_users;"`
+	Credentials  []WebauthnCredential
 }
 
 func (u User) WebAuthnID() []byte { return []byte(u.ID) }
@@ -57,10 +59,12 @@ func (u User) WebAuthnCredentialDescriptors() (descriptors []protocol.Credential
 	return descriptors
 }
 
+func (u User) FullName() string { return u.FirstName + " " + u.LastName }
+
 type OneTimeAccessToken struct {
 	Base
 	Token     string
-	ExpiresAt time.Time
+	ExpiresAt datatype.DateTime
 
 	UserID string
 	User   User

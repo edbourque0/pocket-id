@@ -30,19 +30,23 @@ func initRouter(db *gorm.DB, appConfigService *service.AppConfigService) {
 
 	// Initialize services
 	templateDir := os.DirFS(common.EnvConfig.EmailTemplatesPath)
-	emailService, err := service.NewEmailService(appConfigService, templateDir)
+	emailService, err := service.NewEmailService(appConfigService, db, templateDir)
 	if err != nil {
 		log.Fatalf("Unable to create email service: %s", err)
 	}
 
-	auditLogService := service.NewAuditLogService(db, appConfigService, emailService)
+	geoLiteService := service.NewGeoLiteService()
+	auditLogService := service.NewAuditLogService(db, appConfigService, emailService, geoLiteService)
 	jwtService := service.NewJwtService(appConfigService)
 	webauthnService := service.NewWebAuthnService(db, jwtService, auditLogService, appConfigService)
-	userService := service.NewUserService(db, jwtService)
-	oidcService := service.NewOidcService(db, jwtService, appConfigService, auditLogService)
+	userService := service.NewUserService(db, jwtService, auditLogService)
+	customClaimService := service.NewCustomClaimService(db)
+	oidcService := service.NewOidcService(db, jwtService, appConfigService, auditLogService, customClaimService)
 	testService := service.NewTestService(db, appConfigService)
+	userGroupService := service.NewUserGroupService(db)
 
 	r.Use(middleware.NewCorsMiddleware().Add())
+	r.Use(middleware.NewErrorHandlerMiddleware().Add())
 	r.Use(middleware.NewRateLimitMiddleware().Add(rate.Every(time.Second), 60))
 	r.Use(middleware.NewJwtAuthMiddleware(jwtService, true).Add(false))
 
@@ -54,9 +58,11 @@ func initRouter(db *gorm.DB, appConfigService *service.AppConfigService) {
 	apiGroup := r.Group("/api")
 	controller.NewWebauthnController(apiGroup, jwtAuthMiddleware, middleware.NewRateLimitMiddleware(), webauthnService)
 	controller.NewOidcController(apiGroup, jwtAuthMiddleware, fileSizeLimitMiddleware, oidcService, jwtService)
-	controller.NewUserController(apiGroup, jwtAuthMiddleware, middleware.NewRateLimitMiddleware(), userService)
-	controller.NewAppConfigController(apiGroup, jwtAuthMiddleware, appConfigService)
+	controller.NewUserController(apiGroup, jwtAuthMiddleware, middleware.NewRateLimitMiddleware(), userService, appConfigService)
+	controller.NewAppConfigController(apiGroup, jwtAuthMiddleware, appConfigService, emailService)
 	controller.NewAuditLogController(apiGroup, auditLogService, jwtAuthMiddleware)
+	controller.NewUserGroupController(apiGroup, jwtAuthMiddleware, userGroupService)
+	controller.NewCustomClaimController(apiGroup, jwtAuthMiddleware, customClaimService)
 
 	// Add test controller in non-production environments
 	if common.EnvConfig.AppEnv != "production" {
